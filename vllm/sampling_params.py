@@ -210,6 +210,9 @@ class SamplingParams(
     logit_bias: Optional[Dict[int, float]] = None
     allowed_token_ids: Optional[List[int]] = None
 
+    # Agent orchestration: identifies which agent program this request belongs to
+    agent_id: Optional[str] = None
+
     @staticmethod
     def from_optional(
         n: Optional[int] = 1,
@@ -241,6 +244,7 @@ class SamplingParams(
         guided_decoding: Optional[GuidedDecodingParams] = None,
         logit_bias: Optional[Union[Dict[int, float], Dict[str, float]]] = None,
         allowed_token_ids: Optional[List[int]] = None,
+        agent_id: Optional[str] = None,
     ) -> "SamplingParams":
         if logit_bias is not None:
             # Convert token_id to integer
@@ -282,6 +286,7 @@ class SamplingParams(
             guided_decoding=guided_decoding,
             logit_bias=logit_bias,
             allowed_token_ids=allowed_token_ids,
+            agent_id=agent_id,
         )
 
     def __post_init__(self) -> None:

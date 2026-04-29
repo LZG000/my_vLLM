@@ -27,6 +27,11 @@ from vllm.entrypoints.openai.reasoning_parsers import (ReasoningParser,
                                                        ReasoningParserManager)
 from vllm.entrypoints.openai.serving_engine import OpenAIServing
 from vllm.entrypoints.openai.serving_models import OpenAIServingModels
+from vllm.engine.agent_metrics import (on_queue_and_wait_time,
+                                      on_request_finished,
+                                      on_tool_time_reported,
+                                      set_model_name,
+                                      should_count_tool_session)
 from vllm.entrypoints.openai.tool_parsers import ToolParser, ToolParserManager
 from vllm.entrypoints.openai.tool_parsers.mistral_tool_parser import (
     MistralToolCall)
@@ -37,6 +42,7 @@ from vllm.sequence import Logprob
 from vllm.transformers_utils.tokenizer import AnyTokenizer, MistralTokenizer
 from vllm.transformers_utils.tokenizers import (maybe_serialize_tool_calls,
                                                 truncate_tool_call_ids)
+from vllm.utils import random_uuid
 
 logger = init_logger(__name__)
 
@@ -142,6 +148,7 @@ class OpenAIServingChat(OpenAIServing):
             ) = self._maybe_get_adapters(request)
 
             model_name = self.models.model_name(lora_request)
+            set_model_name(model_name)
 
             tokenizer = await self.engine_client.get_tokenizer(lora_request)
 
@@ -682,6 +689,40 @@ class OpenAIServingChat(OpenAIServing):
         created_time = int(time.time())
         final_res: Optional[RequestOutput] = None
 
+        # Agent orchestration extras (per-request)
+        # OpenAI python client `extra_body={...}` is merged into the top-level
+        # request JSON, so values may appear either in `request.extra_body` or
+        # as extra top-level fields (pydantic `model_extra`). Support both.
+        extra_body = request.extra_body or {}
+        model_extra = getattr(request, "model_extra", None) or {}
+
+        agent_id = request.agent_id or extra_body.get("agent_id") or model_extra.get(
+            "agent_id")
+        tool_time_ms = extra_body.get("tool_time_ms")
+        if tool_time_ms is None:
+            tool_time_ms = model_extra.get("tool_time_ms")
+        tool_session_id = extra_body.get("tool_session_id")
+        if tool_session_id is None:
+            tool_session_id = model_extra.get("tool_session_id")
+
+        tool_time_seconds = 0.0
+        if tool_time_ms is not None:
+            try:
+                tool_time_seconds = max(0.0, float(tool_time_ms) / 1000.0)
+            except (TypeError, ValueError):
+                tool_time_seconds = 0.0
+
+            duplicated = not should_count_tool_session(
+                str(tool_session_id) if tool_session_id is not None else None)
+            if agent_id is not None:
+                on_tool_time_reported(
+                    agent_id=str(agent_id),
+                    tool_seconds=tool_time_seconds,
+                    duplicated=duplicated,
+                )
+            if duplicated:
+                tool_time_seconds = 0.0
+
         try:
             async for res in result_generator:
                 final_res = res
@@ -849,6 +890,25 @@ class OpenAIServingChat(OpenAIServing):
             usage=usage,
             prompt_logprobs=final_res.prompt_logprobs,
         )
+
+        if auto_tools_called:
+            response.extra_body = response.extra_body or {}
+            response.extra_body["tool_session_id"] = f"tool-{random_uuid()}"
+            response.extra_body["tool_session_required"] = True
+
+        if agent_id is not None:
+            queue_seconds = (final_res.metrics.time_in_queue
+                             if final_res.metrics
+                             and final_res.metrics.time_in_queue is not None
+                             else 0.0)
+            on_queue_and_wait_time(
+                agent_id=str(agent_id),
+                queue_seconds=queue_seconds,
+                tool_seconds=tool_time_seconds,
+            )
+            execution_seconds = max(0.0, time.time() - created_time)
+            on_request_finished(
+                agent_id=str(agent_id), execution_seconds=execution_seconds)
 
         return response
 

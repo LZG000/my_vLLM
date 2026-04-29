@@ -22,9 +22,8 @@ import uvloop
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 from starlette.datastructures import State
-from starlette.routing import Mount
 from typing_extensions import assert_never
 
 import vllm.envs as envs
@@ -274,25 +273,45 @@ def mount_metrics(app: FastAPI):
     # We need to set PROMETHEUS_MULTIPROC_DIR environment variable
     # before prometheus_client is imported.
     # See https://prometheus.github.io/client_python/multiprocess/
-    from prometheus_client import (CollectorRegistry, make_asgi_app,
-                                   multiprocess)
+    from prometheus_client import (CollectorRegistry, REGISTRY, exposition,
+                                   generate_latest, multiprocess)
 
     prometheus_multiproc_dir_path = os.getenv("PROMETHEUS_MULTIPROC_DIR", None)
-    if prometheus_multiproc_dir_path is not None:
-        logger.debug("vLLM to use %s as PROMETHEUS_MULTIPROC_DIR",
-                     prometheus_multiproc_dir_path)
-        registry = CollectorRegistry()
-        multiprocess.MultiProcessCollector(registry)
 
-        # Add prometheus asgi middleware to route /metrics requests
-        metrics_route = Mount("/metrics", make_asgi_app(registry=registry))
-    else:
-        # Add prometheus asgi middleware to route /metrics requests
-        metrics_route = Mount("/metrics", make_asgi_app())
+    @app.get("/metrics")
+    async def merged_metrics() -> Response:
+        if prometheus_multiproc_dir_path is not None:
+            logger.debug("vLLM to use %s as PROMETHEUS_MULTIPROC_DIR",
+                         prometheus_multiproc_dir_path)
+            mp_registry = CollectorRegistry()
+            multiprocess.MultiProcessCollector(mp_registry)
+            mp_payload = generate_latest(mp_registry)
 
-    # Workaround for 307 Redirect for /metrics
-    metrics_route.path_regex = re.compile("^/metrics(?P<path>.*)$")
-    app.routes.append(metrics_route)
+            # API/frontend process counters are stored in default REGISTRY.
+            # Merge only agent_* families to avoid duplicates with multiprocess.
+            api_payload = generate_latest(REGISTRY)
+            agent_lines = []
+            for line in api_payload.splitlines():
+                if line.startswith(b"# HELP vllm:agent_") \
+                        or line.startswith(b"# TYPE vllm:agent_") \
+                        or line.startswith(b"vllm:agent_"):
+                    agent_lines.append(line)
+
+            if agent_lines:
+                combined = mp_payload + b"\n" + b"\n".join(agent_lines) + b"\n"
+            else:
+                combined = mp_payload
+
+            return PlainTextResponse(
+                combined.decode("utf-8", errors="replace"),
+                media_type=exposition.CONTENT_TYPE_LATEST,
+            )
+
+        payload = generate_latest(REGISTRY)
+        return PlainTextResponse(
+            payload.decode("utf-8", errors="replace"),
+            media_type=exposition.CONTENT_TYPE_LATEST,
+        )
 
 
 def base(request: Request) -> OpenAIServing:

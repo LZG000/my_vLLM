@@ -43,28 +43,41 @@ client = OpenAI(
 
 
 def predict(message, history):
-    # Convert chat history to OpenAI format
     history_openai_format = [{
         "role": "system",
         "content": "You are a great ai assistant."
     }]
-    for human, assistant in history:
-        history_openai_format.append({"role": "user", "content": human})
-        history_openai_format.append({
-            "role": "assistant",
-            "content": assistant
-        })
+
+    # ----------------- 终极修复，兼容所有 Gradio 版本 -----------------
+    for turn in history:
+        try:
+            # 情况1：元组 / 列表 (user, assistant)
+            if isinstance(turn, (list, tuple)) and len(turn) >= 2:
+                user_msg, ai_msg = turn[0], turn[1]
+            # 情况2：字典格式
+            elif isinstance(turn, dict):
+                user_msg = turn.get("user", turn.get("human", ""))
+                ai_msg = turn.get("assistant", turn.get("bot", ""))
+            # 情况3：其他格式直接跳过
+            else:
+                continue
+
+            if user_msg and ai_msg:
+                history_openai_format.append({"role": "user", "content": user_msg})
+                history_openai_format.append({"role": "assistant", "content": ai_msg})
+        except:
+            continue
+
     history_openai_format.append({"role": "user", "content": message})
 
     # Create a chat completion request and send it to the API server
     stream = client.chat.completions.create(
-        model=args.model,  # Model name to use
-        messages=history_openai_format,  # Chat history
-        temperature=args.temp,  # Temperature for text generation
-        stream=True,  # Stream response
+        model=args.model,
+        messages=history_openai_format,
+        temperature=args.temp,
+        stream=True,
         extra_body={
-            'repetition_penalty':
-            1,
+            'repetition_penalty': 1,
             'stop_token_ids': [
                 int(id.strip()) for id in args.stop_token_ids.split(',')
                 if id.strip()
@@ -74,7 +87,8 @@ def predict(message, history):
     # Read and return generated text from response stream
     partial_message = ""
     for chunk in stream:
-        partial_message += (chunk.choices[0].delta.content or "")
+        content = chunk.choices[0].delta.content or ""
+        partial_message += content
         yield partial_message
 
 

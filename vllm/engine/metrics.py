@@ -266,7 +266,13 @@ class Metrics:
 
     def _unregister_vllm_metrics(self) -> None:
         for collector in list(prometheus_client.REGISTRY._collector_to_names):
-            if hasattr(collector, "_name") and "vllm" in collector._name:
+            if not hasattr(collector, "_name"):
+                continue
+            name = collector._name
+            # Keep agent metrics registered by vllm.engine.agent_metrics.
+            if name.startswith("vllm:agent_"):
+                continue
+            if "vllm" in name:
                 prometheus_client.REGISTRY.unregister(collector)
 
 

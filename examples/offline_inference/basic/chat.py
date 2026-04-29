@@ -60,7 +60,7 @@ def main(args: dict):
     print_outputs(outputs)
 
     # You can run batch inference with llm.chat API
-    conversations = [conversation for _ in range(10)]
+    conversations = [conversation for _ in range(1)]
 
     # We turn on tqdm progress bar to verify it's indeed running batch inference
     outputs = llm.chat(conversations, sampling_params, use_tqdm=True)
@@ -85,7 +85,8 @@ if __name__ == "__main__":
     # Add engine args
     engine_group = parser.add_argument_group("Engine arguments")
     EngineArgs.add_cli_args(engine_group)
-    engine_group.set_defaults(model="meta-llama/Llama-3.2-1B-Instruct")
+    # engine_group.set_defaults(model="meta-llama/Llama-3.2-1B-Instruct")
+    engine_group.set_defaults(model="Qwen/Qwen2.5-0.5B-Instruct")
     # Add sampling params
     sampling_group = parser.add_argument_group("Sampling parameters")
     sampling_group.add_argument("--max-tokens", type=int)

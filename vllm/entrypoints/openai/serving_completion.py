@@ -10,6 +10,11 @@ from fastapi import Request
 
 from vllm.config import ModelConfig
 from vllm.engine.protocol import EngineClient
+from vllm.engine.agent_metrics import (on_queue_and_wait_time,
+                                      on_request_finished,
+                                      on_tool_time_reported,
+                                      set_model_name,
+                                      should_count_tool_session)
 from vllm.entrypoints.logger import RequestLogger
 # yapf conflicts with isort for this block
 # yapf: disable
@@ -89,6 +94,35 @@ class OpenAIServingCompletion(OpenAIServing):
         request_id = f"cmpl-{self._base_request_id(raw_request)}"
         created_time = int(time.time())
 
+        extra_body = request.extra_body or {}
+        model_extra = getattr(request, "model_extra", None) or {}
+        agent_id = request.agent_id or extra_body.get("agent_id") or model_extra.get(
+            "agent_id")
+        tool_time_ms = extra_body.get("tool_time_ms")
+        if tool_time_ms is None:
+            tool_time_ms = model_extra.get("tool_time_ms")
+        tool_session_id = extra_body.get("tool_session_id")
+        if tool_session_id is None:
+            tool_session_id = model_extra.get("tool_session_id")
+
+        tool_time_seconds = 0.0
+        if tool_time_ms is not None:
+            try:
+                tool_time_seconds = max(0.0, float(tool_time_ms) / 1000.0)
+            except (TypeError, ValueError):
+                tool_time_seconds = 0.0
+
+            duplicated = not should_count_tool_session(
+                str(tool_session_id) if tool_session_id is not None else None)
+            if agent_id is not None:
+                on_tool_time_reported(
+                    agent_id=str(agent_id),
+                    tool_seconds=tool_time_seconds,
+                    duplicated=duplicated,
+                )
+            if duplicated:
+                tool_time_seconds = 0.0
+
         request_metadata = RequestResponseMetadata(request_id=request_id)
         if raw_request:
             raw_request.state.request_metadata = request_metadata
@@ -100,6 +134,8 @@ class OpenAIServingCompletion(OpenAIServing):
             ) = self._maybe_get_adapters(request)
 
             tokenizer = await self.engine_client.get_tokenizer(lora_request)
+            model_name = self.models.model_name(lora_request)
+            set_model_name(model_name)
 
             request_prompts, engine_prompts = await self._preprocess_completion(
                 request,
@@ -214,6 +250,8 @@ class OpenAIServingCompletion(OpenAIServing):
                 model_name,
                 tokenizer,
                 request_metadata,
+                agent_id=agent_id,
+                tool_time_seconds=tool_time_seconds,
             )
         except asyncio.CancelledError:
             return self.create_error_response("Client disconnected")
@@ -388,6 +426,8 @@ class OpenAIServingCompletion(OpenAIServing):
         model_name: str,
         tokenizer: AnyTokenizer,
         request_metadata: RequestResponseMetadata,
+        agent_id: Optional[str] = None,
+        tool_time_seconds: float = 0.0,
     ) -> CompletionResponse:
         choices: List[CompletionResponseChoice] = []
         num_prompt_tokens = 0
@@ -469,13 +509,29 @@ class OpenAIServingCompletion(OpenAIServing):
 
         request_metadata.final_usage_info = usage
 
-        return CompletionResponse(
+        response = CompletionResponse(
             id=request_id,
             created=created_time,
             model=model_name,
             choices=choices,
             usage=usage,
         )
+
+        if agent_id is not None:
+            queue_seconds = 0.0
+            if final_res_batch and final_res_batch[0].metrics \
+                    and final_res_batch[0].metrics.time_in_queue is not None:
+                queue_seconds = final_res_batch[0].metrics.time_in_queue
+            on_queue_and_wait_time(
+                agent_id=str(agent_id),
+                queue_seconds=queue_seconds,
+                tool_seconds=tool_time_seconds,
+            )
+            execution_seconds = max(0.0, time.time() - created_time)
+            on_request_finished(
+                agent_id=str(agent_id), execution_seconds=execution_seconds)
+
+        return response
 
     def _create_completion_logprobs(
         self,

@@ -44,15 +44,25 @@ from vllm.sampling_params import SamplingParams
 #     python demo.py simple
 #     python demo.py advanced
 
+# model_name = "Qwen/Qwen2-0.5B-Instruct"
 model_name = "mistralai/Mistral-7B-Instruct-v0.3"
 # or switch to "mistralai/Mistral-Nemo-Instruct-2407"
 # or "mistralai/Mistral-Large-Instruct-2407"
 # or any other mistral model with function calling ability
 
 sampling_params = SamplingParams(max_tokens=8192, temperature=0.0)
+# llm = LLM(
+#     model=model_name,
+#     dtype="half",        # T4 显卡必须
+#     trust_remote_code=True
+# )
+
 llm = LLM(model=model_name,
           tokenizer_mode="mistral",
           config_format="mistral",
+          tensor_parallel_size=2,  # 2卡
+          max_model_len=81920,       # 关键：把长度改小
+          dtype="float16",
           load_format="mistral")
 
 
@@ -110,7 +120,13 @@ messages = [{
 }]
 
 outputs = llm.chat(messages, sampling_params=sampling_params, tools=tools)
+
+# print("llm raw outputs: ",outputs)
 output = outputs[0].outputs[0].text.strip()
+
+# 去掉 Mistral 特有的 [TOOL_CALLS] 前缀
+if output.startswith('[TOOL_CALLS]'):
+    output = output[len('[TOOL_CALLS]'):]
 
 # append the assistant message
 messages.append({

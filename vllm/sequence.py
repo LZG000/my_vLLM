@@ -654,6 +654,7 @@ class SequenceGroup:
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         priority: int = 0,
+        agent_id: Optional[str] = None,  # [新增]
     ) -> None:
         self.request_id = request_id
         self.seqs = seqs
@@ -680,6 +681,7 @@ class SequenceGroup:
         self.priority = priority
 
         self.cached_request_output = None
+        self.agent_id = agent_id  # [新增] 绑定 agent_id
 
     @property
     def prompt(self) -> Optional[str]:

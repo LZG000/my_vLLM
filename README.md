@@ -1,156 +1,111 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/source/assets/logos/vllm-logo-text-dark.png">
-    <img alt="vLLM" src="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/source/assets/logos/vllm-logo-text-light.png" width=55%>
-  </picture>
-</p>
+# my_vLLM
 
-<h3 align="center">
-Easy, fast, and cheap LLM serving for everyone
-</h3>
+基于 [vLLM](https://github.com/vllm-project/vllm) 的个人分支，在原项目基础上增加了**多代理/多租户场景下的 LLM 服务质量监控**功能及部分 GPU 内核优化。
 
-<p align="center">
-| <a href="https://docs.vllm.ai"><b>Documentation</b></a> | <a href="https://vllm.ai"><b>Blog</b></a> | <a href="https://arxiv.org/abs/2309.06180"><b>Paper</b></a> | <a href="https://x.com/vllm_project"><b>Twitter/X</b></a> | <a href="https://slack.vllm.ai"><b>Developer Slack</b></a> |
-</p>
+> 原项目 vLLM 是 UC Berkeley Sky Computing Lab 开发的高性能、内存高效的 LLM 推理与服务引擎，采用 PagedAttention 技术实现高效的 KV 缓存管理。
 
 ---
 
-We are excited to invite you to our Menlo Park meetup with Meta, evening of Thursday, February 27! Meta engineers will discuss the improvements on top of vLLM, and vLLM contributors will share updates from the v0.7.x series of releases. [Register Now](https://lu.ma/h7g3kuj9)
+## 项目结构
+
+### 核心 Python 包：`vllm/`
+
+| 子目录 | 职责 |
+|---|---|
+| `vllm/core/` | 核心调度器、block 管理器、KV 缓存逻辑（块空间管理、驱逐策略） |
+| `vllm/engine/` | 推理引擎（同步 `LLMEngine`、异步 `AsyncLLMEngine`、多进程引擎）、**指标系统（含本分支核心新增的 agent_metrics）** |
+| `vllm/entrypoints/` | API 服务器（OpenAI 兼容 FastAPI）、CLI 入口、LLM 类 |
+| `vllm/model_executor/` | 模型加载器、所有模型架构实现、量化层、引导解码 |
+| `vllm/attention/` | 注意力机制后端（PagedAttention、FlashAttention 等） |
+| `vllm/distributed/` | 分布式通信、并行状态、KV 传输 |
+| `vllm/worker/` | 工作进程（CPU/GPU/HPU/TPU 等）、模型运行器、缓存引擎 |
+| `vllm/v1/` | V1 架构升级（新一代推理执行器，含独立的 attention/core/engine） |
+| `vllm/lora/` | LoRA 低秩适配支持 |
+| `vllm/spec_decode/` | 推测解码（Medusa、MLP 推测器、ngram、MTP） |
+| `vllm/multimodal/` | 多模态支持（图像、音频、视频输入） |
+| `vllm/platforms/` | 硬件平台抽象层（CUDA/ROCm/CPU/HPU/Neuron/OpenVINO/TPU/XPU） |
+| `vllm/compilation/` | Torch 编译优化（FX 图优化、算子融合、Inductor 后端） |
+| `vllm/third_party/` | 第三方集成（DeepSeek DeepGEMM、FlashMLA、Triton 内核） |
+
+### 原生 CUDA/ROCm/C++ 内核：`csrc/`
+
+| 子目录 | 职责 |
+|---|---|
+| `attention/` | FlashAttention 内核 |
+| `moe/` | MoE 内核（含 Marlin MoE WNA16） |
+| `quantization/` | 量化内核（Marlin、AWQ、GPTQ 等） |
+| `mamba/` | Mamba 架构内核 |
+| `core/` | 核心算子 |
+| `cpu/`, `rocm/` | 特定平台内核 |
+
+### 其他目录
+
+| 目录 | 职责 |
+|---|---|
+| `benchmarks/` | 性能基准测试（延迟、吞吐、服务、前缀缓存） |
+| `tests/` | 测试套件（42+ 子目录，覆盖各功能模块） |
+| `examples/` | 使用示例（离线推理、在线服务、Gradio Web UI） |
+| `docs/` | Sphinx 文档源码 |
+| `tools/` | 开发工具（lint、profiler） |
+| `.buildkite/` | CI/CD 流水线（测试、发版、基准测试） |
+| `.github/` | GitHub Actions 工作流、Issue 模板 |
+
+### 构建与依赖
+
+| 文件 | 用途 |
+|---|---|
+| `setup.py` / `CMakeLists.txt` | Python + CMake 混合构建，支持多平台编译 |
+| `pyproject.toml` | 项目元数据、ruff/mypy/isort/pytest 配置 |
+| `requirements-common.txt` | 通用依赖（transformers、fastapi、prometheus、aiohttp 等） |
+| `requirements-cuda.txt` | NVIDIA GPU 依赖（torch、xformers、ray） |
+| `requirements-rocm.txt` / `cpu.txt` / `hpu.txt` 等 | 各平台专用依赖 |
+| `Dockerfile*` | 各平台 Docker 构建文件 |
 
 ---
 
-*Latest News* 🔥
+## 本分支改动（相对上游 vLLM）
 
-- [2025/01] We are excited to announce the alpha release of vLLM V1: A major architectural upgrade with 1.7x speedup! Clean code, optimized execution loop, zero-overhead prefix caching, enhanced multimodal support, and more. Please check out our blog post [here](https://blog.vllm.ai/2025/01/27/v1-alpha-release.html).
-- [2025/01] We hosted [the eighth vLLM meetup](https://lu.ma/zep56hui) with Google Cloud! Please find the meetup slides from vLLM team [here](https://docs.google.com/presentation/d/1epVkt4Zu8Jz_S5OhEHPc798emsYh2BwYfRuDDVEF7u4/edit?usp=sharing), and Google Cloud team [here](https://drive.google.com/file/d/1h24pHewANyRL11xy5dXUbvRC9F9Kkjix/view?usp=sharing).
-- [2024/12] vLLM joins [pytorch ecosystem](https://pytorch.org/blog/vllm-joins-pytorch)! Easy, Fast, and Cheap LLM Serving for Everyone!
-- [2024/11] We hosted [the seventh vLLM meetup](https://lu.ma/h0qvrajz) with Snowflake! Please find the meetup slides from vLLM team [here](https://docs.google.com/presentation/d/1e3CxQBV3JsfGp30SwyvS3eM_tW-ghOhJ9PAJGK6KR54/edit?usp=sharing), and Snowflake team [here](https://docs.google.com/presentation/d/1qF3RkDAbOULwz9WK5TOltt2fE9t6uIc_hVNLFAaQX6A/edit?usp=sharing).
-- [2024/10] We have just created a developer slack ([slack.vllm.ai](https://slack.vllm.ai)) focusing on coordinating contributions and discussing features. Please feel free to join us there!
-- [2024/10] Ray Summit 2024 held a special track for vLLM! Please find the opening talk slides from the vLLM team [here](https://docs.google.com/presentation/d/1B_KQxpHBTRa_mDF-tR6i8rWdOU5QoTZNcEg2MKZxEHM/edit?usp=sharing). Learn more from the [talks](https://www.youtube.com/playlist?list=PLzTswPQNepXl6AQwifuwUImLPFRVpksjR) from other vLLM contributors and users!
-- [2024/09] We hosted [the sixth vLLM meetup](https://lu.ma/87q3nvnh) with NVIDIA! Please find the meetup slides [here](https://docs.google.com/presentation/d/1wrLGwytQfaOTd5wCGSPNhoaW3nq0E-9wqyP7ny93xRs/edit?usp=sharing).
-- [2024/07] We hosted [the fifth vLLM meetup](https://lu.ma/lp0gyjqr) with AWS! Please find the meetup slides [here](https://docs.google.com/presentation/d/1RgUD8aCfcHocghoP3zmXzck9vX3RCI9yfUAB2Bbcl4Y/edit?usp=sharing).
-- [2024/07] In partnership with Meta, vLLM officially supports Llama 3.1 with FP8 quantization and pipeline parallelism! Please check out our blog post [here](https://blog.vllm.ai/2024/07/23/llama31.html).
-- [2024/06] We hosted [the fourth vLLM meetup](https://lu.ma/agivllm) with Cloudflare and BentoML! Please find the meetup slides [here](https://docs.google.com/presentation/d/1iJ8o7V2bQEi0BFEljLTwc5G1S10_Rhv3beed5oB0NJ4/edit?usp=sharing).
-- [2024/04] We hosted [the third vLLM meetup](https://robloxandvllmmeetup2024.splashthat.com/) with Roblox! Please find the meetup slides [here](https://docs.google.com/presentation/d/1A--47JAK4BJ39t954HyTkvtfwn0fkqtsL8NGFuslReM/edit?usp=sharing).
-- [2024/01] We hosted [the second vLLM meetup](https://lu.ma/ygxbpzhl) with IBM! Please find the meetup slides [here](https://docs.google.com/presentation/d/12mI2sKABnUw5RBWXDYY-HtHth4iMSNcEoQ10jDQbxgA/edit?usp=sharing).
-- [2023/10] We hosted [the first vLLM meetup](https://lu.ma/first-vllm-meetup) with a16z! Please find the meetup slides [here](https://docs.google.com/presentation/d/1QL-XPFXiFpDBh86DbEegFXBXFXjix4v032GhShbKf3s/edit?usp=sharing).
-- [2023/08] We would like to express our sincere gratitude to [Andreessen Horowitz](https://a16z.com/2023/08/30/supporting-the-open-source-ai-community/) (a16z) for providing a generous grant to support the open-source development and research of vLLM.
-- [2023/06] We officially released vLLM! FastChat-vLLM integration has powered [LMSYS Vicuna and Chatbot Arena](https://chat.lmsys.org) since mid-April. Check out our [blog post](https://vllm.ai).
+### 1. 代理编排指标系统（核心新增）
+
+**`vllm/engine/agent_metrics.py`** — 基于 Prometheus 的指标模块，按 `agent_id` 和 `model_name` 追踪：
+
+| 指标名 | 含义 |
+|---|---|
+| `vllm:agent_requests_total` | 按代理统计的已完成的请求数 |
+| `vllm:agent_execution_seconds_total` | 按代理统计的执行耗时（秒） |
+| `vllm:agent_tool_seconds_total` | 按代理统计的工具调用耗时（秒） |
+| `vllm:agent_queue_seconds_total` | 按代理统计的排队耗时（秒） |
+| `vllm:agent_wait_seconds_total` | 按代理统计的总等待耗时（秒） |
+| `vllm:agent_tool_time_reports_total` | 工具耗时上报次数 |
+| `vllm:agent_tool_time_duplicates_total` | 重复上报（被去重）次数 |
+
+去重机制：维护滚动窗口（最多 20,000 个 session ID），避免同一 session 的工具耗时被重复计数。
+
+### 2. 指标系统修改
+
+- **`vllm/engine/metrics.py`** — Prometheus 清理周期中跳过 `vllm:agent_*` 指标，防止引擎重启时被错误注销。
+- **`vllm/entrypoints/openai/api_server.py`** — `/metrics` 端点改为 FastAPI 路由方式实现，多进程模式下合并引擎指标与代理指标。
+
+### 3. 示例改进
+
+- `examples/offline_inference/chat_with_tools.py` — Mistral 模型工具调用演示
+- `examples/offline_inference/basic/mychat.py` — 交互式聊天脚本（Qwen 模型）
+- `examples/online_serving/gradio_openai_chatbot_webserver.py` — Gradio Web UI 升级
 
 ---
 
-## About
-
-vLLM is a fast and easy-to-use library for LLM inference and serving.
-
-Originally developed in the [Sky Computing Lab](https://sky.cs.berkeley.edu) at UC Berkeley, vLLM has evolved into a community-driven project with contributions from both academia and industry.
-
-vLLM is fast with:
-
-- State-of-the-art serving throughput
-- Efficient management of attention key and value memory with [**PagedAttention**](https://blog.vllm.ai/2023/06/20/vllm.html)
-- Continuous batching of incoming requests
-- Fast model execution with CUDA/HIP graph
-- Quantizations: [GPTQ](https://arxiv.org/abs/2210.17323), [AWQ](https://arxiv.org/abs/2306.00978), INT4, INT8, and FP8.
-- Optimized CUDA kernels, including integration with FlashAttention and FlashInfer.
-- Speculative decoding
-- Chunked prefill
-
-**Performance benchmark**: We include a performance benchmark at the end of [our blog post](https://blog.vllm.ai/2024/09/05/perf-update.html). It compares the performance of vLLM against other LLM serving engines ([TensorRT-LLM](https://github.com/NVIDIA/TensorRT-LLM), [SGLang](https://github.com/sgl-project/sglang) and [LMDeploy](https://github.com/InternLM/lmdeploy)). The implementation is under [nightly-benchmarks folder](.buildkite/nightly-benchmarks/) and you can [reproduce](https://github.com/vllm-project/vllm/issues/8176) this benchmark using our one-click runnable script.
-
-vLLM is flexible and easy to use with:
-
-- Seamless integration with popular Hugging Face models
-- High-throughput serving with various decoding algorithms, including *parallel sampling*, *beam search*, and more
-- Tensor parallelism and pipeline parallelism support for distributed inference
-- Streaming outputs
-- OpenAI-compatible API server
-- Support NVIDIA GPUs, AMD CPUs and GPUs, Intel CPUs and GPUs, PowerPC CPUs, TPU, and AWS Neuron.
-- Prefix caching support
-- Multi-lora support
-
-vLLM seamlessly supports most popular open-source models on HuggingFace, including:
-- Transformer-like LLMs (e.g., Llama)
-- Mixture-of-Expert LLMs (e.g., Mixtral, Deepseek-V2 and V3)
-- Embedding Models (e.g. E5-Mistral)
-- Multi-modal LLMs (e.g., LLaVA)
-
-Find the full list of supported models [here](https://docs.vllm.ai/en/latest/models/supported_models.html).
-
-## Getting Started
-
-Install vLLM with `pip` or [from source](https://docs.vllm.ai/en/latest/getting_started/installation/gpu/index.html#build-wheel-from-source):
+## 快速开始
 
 ```bash
-pip install vllm
+# 安装依赖
+pip install -r requirements-cuda.txt
+
+# 启动 OpenAI 兼容 API 服务
+python -m vllm.entrypoints.openai.api_server --model <model_name>
 ```
 
-Visit our [documentation](https://docs.vllm.ai/en/latest/) to learn more.
-- [Installation](https://docs.vllm.ai/en/latest/getting_started/installation/index.html)
-- [Quickstart](https://docs.vllm.ai/en/latest/getting_started/quickstart.html)
-- [List of Supported Models](https://docs.vllm.ai/en/latest/models/supported_models.html)
+详见原项目文档：https://docs.vllm.ai
 
-## Contributing
+## 许可证
 
-We welcome and value any contributions and collaborations.
-Please check out [CONTRIBUTING.md](./CONTRIBUTING.md) for how to get involved.
-
-## Sponsors
-
-vLLM is a community project. Our compute resources for development and testing are supported by the following organizations. Thank you for your support!
-
-<!-- Note: Please sort them in alphabetical order. -->
-<!-- Note: Please keep these consistent with docs/source/community/sponsors.md -->
-Cash Donations:
-- a16z
-- Dropbox
-- Sequoia Capital
-- Skywork AI
-- ZhenFund
-
-Compute Resources:
-- AMD
-- Anyscale
-- AWS
-- Crusoe Cloud
-- Databricks
-- DeepInfra
-- Google Cloud
-- Lambda Lab
-- Nebius
-- Novita AI
-- NVIDIA
-- Replicate
-- Roblox
-- RunPod
-- Trainy
-- UC Berkeley
-- UC San Diego
-
-Slack Sponsor: Anyscale
-
-We also have an official fundraising venue through [OpenCollective](https://opencollective.com/vllm). We plan to use the fund to support the development, maintenance, and adoption of vLLM.
-
-## Citation
-
-If you use vLLM for your research, please cite our [paper](https://arxiv.org/abs/2309.06180):
-
-```bibtex
-@inproceedings{kwon2023efficient,
-  title={Efficient Memory Management for Large Language Model Serving with PagedAttention},
-  author={Woosuk Kwon and Zhuohan Li and Siyuan Zhuang and Ying Sheng and Lianmin Zheng and Cody Hao Yu and Joseph E. Gonzalez and Hao Zhang and Ion Stoica},
-  booktitle={Proceedings of the ACM SIGOPS 29th Symposium on Operating Systems Principles},
-  year={2023}
-}
-```
-
-## Contact Us
-
-- For technical questions and feature requests, please use Github issues or discussions.
-- For discussing with fellow users and coordinating contributions and development, please use Slack.
-- For security disclosures, please use Github's security advisory feature.
-- For collaborations and partnerships, please contact us at vllm-questions AT lists.berkeley.edu.
-
-## Media Kit
-
-- If you wish to use vLLM's logo, please refer to [our media kit repo](https://github.com/vllm-project/media-kit).
+Apache 2.0，与原项目一致。

@@ -1335,6 +1335,18 @@ class LLMEngine:
         # This ensures that the scheduler is only called again when the current
         # batch has completed.
         if not self._has_remaining_steps(seq_group_metadata_list):
+            # Log queue state *before* schedule() drains the waiting queue
+            if self.log_stats:
+                pre_running = sum(len(s.running)
+                                  for s in self.scheduler)
+                pre_waiting = sum(len(s.waiting)
+                                  for s in self.scheduler)
+                pre_swapped = sum(len(s.swapped)
+                                  for s in self.scheduler)
+                for logger in self.stat_loggers.values():
+                    logger.log_pre_schedule(pre_running, pre_waiting,
+                                           pre_swapped)
+
             # Schedule iteration
             (seq_group_metadata_list, scheduler_outputs,
              allow_async_output_proc

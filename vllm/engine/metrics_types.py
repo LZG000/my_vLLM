@@ -91,6 +91,15 @@ class StatLoggerBase(ABC):
     def log(self, stats: Stats) -> None:
         raise NotImplementedError
 
+    def log_pre_schedule(self, num_running: int, num_waiting: int,
+                         num_swapped: int) -> None:
+        """Log pre-schedule queue state. Called before scheduler.schedule().
+
+        Default no-op; override to capture queue depths before the scheduler
+        drains the waiting queue.
+        """
+        pass
+
     @abstractmethod
     def info(self, type: str, obj: SupportsMetricsInfo) -> None:
         raise NotImplementedError

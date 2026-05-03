@@ -80,6 +80,25 @@ class Metrics:
             documentation="Number of requests swapped to CPU.",
             labelnames=labelnames,
             multiprocess_mode="sum")
+        #   Scheduler State (pre-schedule, sampled before schedule() runs)
+        self.gauge_pre_schedule_running = self._gauge_cls(
+            name="vllm:pre_schedule_num_requests_running",
+            documentation="Number of requests running on GPU,"
+            " sampled before scheduling.",
+            labelnames=labelnames,
+            multiprocess_mode="sum")
+        self.gauge_pre_schedule_waiting = self._gauge_cls(
+            name="vllm:pre_schedule_num_requests_waiting",
+            documentation="Number of requests waiting,"
+            " sampled before scheduling.",
+            labelnames=labelnames,
+            multiprocess_mode="sum")
+        self.gauge_pre_schedule_swapped = self._gauge_cls(
+            name="vllm:pre_schedule_num_requests_swapped",
+            documentation="Number of requests swapped to CPU,"
+            " sampled before scheduling.",
+            labelnames=labelnames,
+            multiprocess_mode="sum")
         #   KV Cache Usage in %
         self.gauge_gpu_cache_usage = self._gauge_cls(
             name="vllm:gpu_cache_usage_perc",
@@ -627,6 +646,18 @@ class PrometheusStatLogger(StatLoggerBase):
             stats.max_num_generation_tokens_requests)
         self._log_histogram(self.metrics.histogram_max_tokens_request,
                             stats.max_tokens_requests)
+
+    def log_pre_schedule(self, num_running: int, num_waiting: int,
+                         num_swapped: int) -> None:
+        """Log pre-schedule queue state to Prometheus.
+
+        Called from LLMEngine.step() right before scheduler.schedule() to
+        capture the true waiting/running/swapped queue depths before the
+        scheduler drains them.
+        """
+        self._log_gauge(self.metrics.gauge_pre_schedule_running, num_running)
+        self._log_gauge(self.metrics.gauge_pre_schedule_waiting, num_waiting)
+        self._log_gauge(self.metrics.gauge_pre_schedule_swapped, num_swapped)
 
     def log(self, stats: Stats):
         """Logs to prometheus and tracked stats every iteration."""

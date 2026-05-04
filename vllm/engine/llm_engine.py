@@ -1633,6 +1633,7 @@ class LLMEngine:
         time_in_queue_requests: List[float] = []
         model_forward_time_requests: List[float] = []
         model_execute_time_requests: List[float] = []
+        time_running_queue_requests: List[float] = []
         #   Metadata
         num_prompt_tokens_requests: List[int] = []
         num_generation_tokens_requests: List[int] = []
@@ -1740,6 +1741,22 @@ class LLMEngine:
                             now - seq_group.metrics.first_token_time)
                         time_inference_requests.append(
                             now - seq_group.metrics.first_scheduled_time)
+                        # Compute running queue time
+                        if (seq_group.metrics.first_scheduled_step > 0
+                                and seq_group.metrics.num_scheduled_steps > 0):
+                            sched = (self.scheduler[0] if isinstance(
+                                self.scheduler, list) else self.scheduler)
+                            total_steps = (sched.step_counter - 
+                                seq_group.metrics.first_scheduled_step + 1)
+                            if total_steps > 0:
+                                skipped_steps = (total_steps - 
+                                    seq_group.metrics.num_scheduled_steps)
+                                avg_step_time = (
+                                        (now - seq_group.metrics.
+                                         first_scheduled_time) /
+                                        total_steps)
+                                time_running_queue_requests.append(
+                                        max(0.0, skipped_steps * avg_step_time))
                     if seq_group.metrics.time_in_queue is not None:
                         time_in_queue_requests.append(
                             seq_group.metrics.time_in_queue)
@@ -1813,6 +1830,7 @@ class LLMEngine:
             # Request stats
             #   Latency
             time_e2e_requests=time_e2e_requests,
+            time_running_queue_requests=time_running_queue_requests,
             time_queue_requests=time_queue_requests,
             time_inference_requests=time_inference_requests,
             time_prefill_requests=time_prefill_requests,

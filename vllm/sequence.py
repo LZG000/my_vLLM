@@ -122,6 +122,10 @@ class RequestMetrics:
     model_forward_time: Optional[float] = None
     model_execute_time: Optional[float] = None
 
+    # Running queue tracking
+    first_scheduled_step: int = 0
+    num_scheduled_steps: int = 0
+
 
 class SequenceDataDelta(
         msgspec.Struct,

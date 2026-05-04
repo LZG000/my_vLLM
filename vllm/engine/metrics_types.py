@@ -56,6 +56,7 @@ class Stats:
     time_in_queue_requests: List[float]
     model_forward_time_requests: List[float]
     model_execute_time_requests: List[float]
+    time_running_queue_requests: List[float]
     #   Metadata
     num_prompt_tokens_requests: List[int]
     num_generation_tokens_requests: List[int]
@@ -86,6 +87,9 @@ class StatLoggerBase(ABC):
         self.last_local_log = time.time()
         self.local_interval = local_interval
         self.spec_decode_metrics: Optional[SpecDecodeWorkerMetrics] = None
+
+    def debug(self, msg: str) -> None:
+        pass
 
     @abstractmethod
     def log(self, stats: Stats) -> None:

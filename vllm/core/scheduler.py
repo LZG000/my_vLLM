@@ -472,6 +472,8 @@ class Scheduler:
         # Sequence groups in the SWAPPED state.
         # Contain decode requests that are swapped out.
         self.swapped: Deque[SequenceGroup] = deque()
+        # Global step counter for running queue time metric
+        self.step_counter: int = 0
         # Sequence groups finished requests ids since last step iteration.
         # It lets the model know that any state associated with these requests
         # can and must be released after the current step.
@@ -1484,6 +1486,7 @@ class Scheduler:
         scheduler_start_time = time.perf_counter()
 
         scheduler_outputs: SchedulerOutputs = self._schedule()
+        self.step_counter += 1
         now = time.time()
 
         if not self.cache_config.enable_prefix_caching:
@@ -1498,6 +1501,11 @@ class Scheduler:
             seq_group = scheduled_seq_group.seq_group
             token_chunk_size = scheduled_seq_group.token_chunk_size
             seq_group.maybe_set_first_scheduled_time(now)
+
+            # Track running queue scheduling stats
+            if seq_group.metrics.first_scheduled_step == 0:
+                seq_group.metrics.first_scheduled_step = self.step_counter
+            seq_group.metrics.num_scheduled_steps += 1
 
             seq_group_metadata = self._seq_group_metadata_cache[
                 self.cache_id].get_object()

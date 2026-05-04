@@ -189,6 +189,12 @@ class Metrics:
             "Histogram of time spent in RUNNING phase for request.",
             labelnames=labelnames,
             buckets=request_latency_buckets)
+        self.histogram_running_queue_time_request = self._histogram_cls(
+            name="vllm:request_running_queue_time_seconds",
+            documentation=
+            "Histogram of time waiting for decode slots in RUNNING pool.",
+            labelnames=labelnames,
+            buckets=[0.3, 0.5, 0.8, 1.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0])
         self.histogram_prefill_time_request = self._histogram_cls(
             name="vllm:request_prefill_time_seconds",
             documentation=
@@ -619,6 +625,8 @@ class PrometheusStatLogger(StatLoggerBase):
                             stats.time_queue_requests)
         self._log_histogram(self.metrics.histogram_inference_time_request,
                             stats.time_inference_requests)
+        self._log_histogram(self.metrics.histogram_running_queue_time_request,
+                            stats.time_running_queue_requests)
         self._log_histogram(self.metrics.histogram_prefill_time_request,
                             stats.time_prefill_requests)
         self._log_histogram(self.metrics.histogram_decode_time_request,

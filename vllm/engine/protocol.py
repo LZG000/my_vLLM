@@ -56,6 +56,8 @@ class EngineClient(ABC):
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         priority: int = 0,
+        agent_priority: int = 0,
+        agent_state: str = "idle",
     ) -> AsyncGenerator[RequestOutput, None]:
         """Generate outputs for a request."""
         ...

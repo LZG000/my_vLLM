@@ -1,3 +1,4 @@
+import time
 # SPDX-License-Identifier: Apache-2.0
 
 import pickle
@@ -195,7 +196,20 @@ class MQLLMEngine:
                     logger.debug("Waiting for new requests in engine loop.")
 
             # Handle any input from the client.
+            total_before = self.engine.scheduler[0].get_num_unfinished_seq_groups()
             self.handle_new_input()
+            total_after = self.engine.scheduler[0].get_num_unfinished_seq_groups()
+            new_arrivals = total_after - total_before
+            # BATCH ACCUMULATION: when new requests arrive, wait up to
+            # 300ms for more concurrent HTTP requests to flush through
+            # ZMQ. Without this, aiohttp's serial send splits bursts
+            # into waves, limiting priority sort to each wave.
+            if new_arrivals > 0:
+                deadline = time.time() + 0.3
+                while time.time() < deadline:
+                    if self.input_socket.poll(timeout=10) != 0:
+                        self.handle_new_input()
+                    # note: don't break - keep polling until deadline
 
             # Engine step.
             request_outputs = self.engine_step()
@@ -274,7 +288,9 @@ class MQLLMEngine:
                 lora_request=request.lora_request,
                 trace_headers=request.trace_headers,
                 prompt_adapter_request=request.prompt_adapter_request,
-                priority=request.priority)
+                priority=request.priority,
+                agent_priority=request.agent_priority,
+                agent_state=request.agent_state)
 
             if self.log_requests:
                 logger.info("Added request %s.", request.request_id)

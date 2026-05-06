@@ -18,6 +18,7 @@ from vllm.prompt_adapter.request import PromptAdapterRequest
 from vllm.sequence import (Sequence, SequenceData, SequenceGroup,
                            SequenceGroupMetadata, SequenceGroupMetadataDelta,
                            SequenceStage, SequenceStatus)
+from vllm.engine.agent_priority import compute_agent_priority_score
 from vllm.utils import Device, PyObjectCache
 
 logger = init_logger(__name__)
@@ -306,7 +307,8 @@ def seq_group_metadata_builder():
                                  is_prompt=False,
                                  seq_data={},
                                  sampling_params=None,
-                                 block_tables={})
+                                 block_tables={},
+                                 agent_state="idle")
 
 
 def scheduler_running_outputs_builder():
@@ -562,6 +564,19 @@ class Scheduler:
         # Add sequence groups to the swapped queue.
         # Only for testing purposes.
         self.swapped.append(seq_group)
+
+    def get_seqs(self, request_id: str):
+        """Get SequenceGroup by request_id from any queue."""
+        for seq_group in self.waiting:
+            if seq_group.request_id == request_id:
+                return seq_group
+        for seq_group in self.running:
+            if seq_group.request_id == request_id:
+                return seq_group
+        for seq_group in self.swapped:
+            if seq_group.request_id == request_id:
+                return seq_group
+        return None
 
     def abort_seq_group(self, request_id: Union[str, Iterable[str]]) -> None:
         """Aborts a sequence group with the given ID.
@@ -1061,6 +1076,36 @@ class Scheduler:
 
         waiting_queue = self.waiting
 
+        # ── Agent-aware priority sorting (Phase 2) ──
+        # Increment waiting_steps and reorder by priority score
+        _now = time.time()
+        for sg in self.waiting:
+            sg.waiting_steps += 1
+        # Sort: higher score = more urgent
+        sorted_waiting = sorted(
+            self.waiting,
+            key=lambda sg: compute_agent_priority_score(
+                agent_state=getattr(sg, 'agent_state', 'idle'),
+                agent_priority=getattr(sg, 'agent_priority', 0),
+                max_tokens=getattr(sg.sampling_params, 'max_tokens', 4096) if sg.sampling_params else 4096,
+                waiting_steps=getattr(sg, 'waiting_steps', 0),
+            ),
+            reverse=True,
+        )
+        if sorted_waiting and self.step_counter % 20 == 0:
+            scores = [(sg.request_id[:12], getattr(sg, 'agent_priority', 0), getattr(sg, 'agent_state', '?'), compute_agent_priority_score(
+                agent_state=getattr(sg, 'agent_state', 'idle'),
+                agent_priority=getattr(sg, 'agent_priority', 0),
+                max_tokens=getattr(sg.sampling_params, 'max_tokens', 4096) if sg.sampling_params else 4096,
+                waiting_steps=getattr(sg, 'waiting_steps', 0),
+            )) for sg in sorted_waiting[:5]]
+            logger.info('SCHEDULER_DEBUG step=%d top5=%s', self.step_counter, scores)
+        self.waiting = deque(sorted_waiting)
+        waiting_queue = self.waiting
+        if len(self.waiting) > 0:
+            prios = [(getattr(sg, 'agent_priority', 'N/A'), getattr(sg, 'agent_state', '?')) for sg in list(self.waiting)[:3]]
+            logger.info('SCHEDULE: step=%d waiting_size=%d top3_prios=%s', self.step_counter, len(self.waiting), prios)
+
         leftover_waiting_sequences: Deque[SequenceGroup] = deque()
         while self._passed_delay(time.time()) and waiting_queue:
             seq_group = waiting_queue[0]
@@ -1502,6 +1547,7 @@ class Scheduler:
             token_chunk_size = scheduled_seq_group.token_chunk_size
             seq_group.maybe_set_first_scheduled_time(now)
 
+
             # Track running queue scheduling stats
             if seq_group.metrics.first_scheduled_step == 0:
                 seq_group.metrics.first_scheduled_step = self.step_counter
@@ -1591,6 +1637,8 @@ class Scheduler:
                         if scheduler_outputs.num_prefill_groups > 0 else None),
                     mm_processor_kwargs=seq_group.mm_processor_kwargs,
                     prompt_adapter_request=seq_group.prompt_adapter_request,
+                    agent_state=seq_group.agent_state,
+                    agent_priority=seq_group.agent_priority,
                 )
             else:
                 # When SPMD mode is enabled, we only send delta data except for

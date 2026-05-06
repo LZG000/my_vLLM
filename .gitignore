@@ -202,3 +202,45 @@ benchmarks/*.json
 # Linting
 actionlint
 shellcheck*/
+
+# ===== 牛马追加：不上传的 =====
+
+# 第三方 CUTLASS/CuTe 头文件 (28MB, 不该在 fork 里)
+vllm/third_party/deep_gemm/
+
+# 编译产物
+*.so
+*.o
+*.a
+*.la
+*.dylib
+
+# 测试输出 & 日志
+test_output/
+*.log
+
+# 测试脚本（根目录散落的）
+/fix_patch.py
+/patch2.py
+/plot_breakdown.py
+/plot_latency.py
+/plot_latency2.py
+/plot_metrics.py
+/plot_queue.py
+/test_200.py
+/test_metrics.py
+/test_metrics2.py
+/test_overload.py
+/test_overload2.py
+/test_overload3.py
+/test_streaming.py
+/test_ttft.py
+/test_ultimate.py
+
+# Prometheus 数据
+/prometheus/
+/prometheus.log
+
+# vLLM 运行时日志
+/vllm.log
+

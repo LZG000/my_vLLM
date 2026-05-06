@@ -124,6 +124,8 @@ class RequestMetrics:
 
     # Running queue tracking
     first_scheduled_step: int = 0
+    # Count of I/O bubble rounds (tool call waiting periods) per request.
+    io_bubble_count: int = 0
     num_scheduled_steps: int = 0
 
 
@@ -659,6 +661,8 @@ class SequenceGroup:
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         priority: int = 0,
         agent_id: Optional[str] = None,  # [新增]
+        agent_priority: int = 0,  # [新增] per-agent scheduling priority
+        agent_state: str = "idle",  # [新增] FSM state for IPC
     ) -> None:
         self.request_id = request_id
         self.seqs = seqs
@@ -686,6 +690,9 @@ class SequenceGroup:
 
         self.cached_request_output = None
         self.agent_id = agent_id  # [新增] 绑定 agent_id
+        self.agent_priority = agent_priority  # [新增] per-agent priority
+        self.agent_state = agent_state  # [新增] FSM state for IPC
+        self.waiting_steps = 0  # [新增] steps spent in waiting queue
 
     @property
     def prompt(self) -> Optional[str]:
@@ -972,6 +979,8 @@ class SequenceGroupMetadata(
     cross_block_table: Optional[List[int]] = None
     prompt_adapter_request: Optional[PromptAdapterRequest] = None
     token_chunk_size: Optional[int] = None
+    agent_state: str = "idle"
+    agent_priority: int = 0
 
     ### Stateful fields that are lazily defined. ###
     # The number of speculative tokens adopted in this request.

@@ -36,6 +36,8 @@ class RPCProcessRequest:
     trace_headers: Optional[Mapping[str, str]] = None
     prompt_adapter_request: Optional[PromptAdapterRequest] = None
     priority: int = 0
+    agent_priority: int = 0
+    agent_state: str = "idle"
 
     @overload
     def __init__(
@@ -47,6 +49,8 @@ class RPCProcessRequest:
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         priority: int = 0,
+        agent_priority: int = 0,
+        agent_state: str = "idle",
     ) -> None:
         ...
 
@@ -62,6 +66,8 @@ class RPCProcessRequest:
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         priority: int = 0,
+        agent_priority: int = 0,
+        agent_state: str = "idle",
     ) -> None:
         ...
 
@@ -78,6 +84,8 @@ class RPCProcessRequest:
             trace_headers: Optional[Mapping[str, str]] = None,
             prompt_adapter_request: Optional[PromptAdapterRequest] = None,
             priority: int = 0,
+            agent_priority: int = 0,
+            agent_state: str = "idle",
             *,
             inputs: Optional[PromptType] = None,  # DEPRECATED
     ) -> None:
@@ -95,6 +103,8 @@ class RPCProcessRequest:
         self.trace_headers = trace_headers
         self.prompt_adapter_request = prompt_adapter_request
         self.priority = priority
+        self.agent_priority = agent_priority
+        self.agent_state = agent_state
 
 
 @dataclass

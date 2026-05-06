@@ -241,6 +241,13 @@ class ChatCompletionRequest(OpenAIBaseModel):
     parallel_tool_calls: Optional[bool] = False
     user: Optional[str] = None
     agent_id: Optional[str] = None
+    agent_priority: int = Field(
+        default=0,
+        ge=0,
+        le=100,
+        description="Agent-level priority (0-100, higher = more important). "
+                    "Per-agent static priority for scheduling decisions."
+    )
 
     # Optional free-form body passthrough for orchestration metadata.
     extra_body: Optional[Dict[str, Any]] = None

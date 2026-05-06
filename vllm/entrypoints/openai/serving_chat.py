@@ -32,6 +32,7 @@ from vllm.engine.agent_metrics import (on_queue_and_wait_time,
                                       on_tool_time_reported,
                                       set_model_name,
                                       should_count_tool_session)
+from vllm.engine.agent_state import AgentState, AgentStateTracker
 from vllm.entrypoints.openai.tool_parsers import ToolParser, ToolParserManager
 from vllm.entrypoints.openai.tool_parsers.mistral_tool_parser import (
     MistralToolCall)
@@ -254,6 +255,11 @@ class OpenAIServingChat(OpenAIServing):
                         trace_headers=trace_headers,
                         prompt_adapter_request=prompt_adapter_request,
                         priority=request.priority,
+                        agent_priority=request.agent_priority,
+                        agent_state=(AgentState.TOOL_RETURNED.value
+                                     if (getattr(request, 'extra_body', {}) or {}).get('tool_time_ms') or
+                                        (getattr(request, 'model_extra', {}) or {}).get('tool_time_ms')
+                                     else AgentState.IDLE.value),
                     )
 
                 generators.append(generator)
@@ -698,6 +704,8 @@ class OpenAIServingChat(OpenAIServing):
 
         agent_id = request.agent_id or extra_body.get("agent_id") or model_extra.get(
             "agent_id")
+        agent_priority = request.agent_priority or extra_body.get("agent_priority") or model_extra.get(
+            "agent_priority", 0)
         tool_time_ms = extra_body.get("tool_time_ms")
         if tool_time_ms is None:
             tool_time_ms = model_extra.get("tool_time_ms")
@@ -722,6 +730,9 @@ class OpenAIServingChat(OpenAIServing):
                 )
             if duplicated:
                 tool_time_seconds = 0.0
+            # FSM: client reports tool execution finished -> IO bubble ended
+            tracker = AgentStateTracker()
+            tracker.transition(request_id, AgentState.TOOL_RETURNED)
 
         try:
             async for res in result_generator:
@@ -895,6 +906,9 @@ class OpenAIServingChat(OpenAIServing):
             response.extra_body = response.extra_body or {}
             response.extra_body["tool_session_id"] = f"tool-{random_uuid()}"
             response.extra_body["tool_session_required"] = True
+            # FSM: model output contains tool calls -> entering IO bubble
+            tracker = AgentStateTracker()
+            tracker.transition(request_id, AgentState.IO_BLOCKED)
 
         if agent_id is not None:
             queue_seconds = (final_res.metrics.time_in_queue
@@ -908,7 +922,16 @@ class OpenAIServingChat(OpenAIServing):
             )
             execution_seconds = max(0.0, time.time() - created_time)
             on_request_finished(
-                agent_id=str(agent_id), execution_seconds=execution_seconds)
+                agent_id=str(agent_id), execution_seconds=execution_seconds,
+                agent_priority=agent_priority)
+
+        # FSM: request complete -> DONE, record and clean up
+        tracker = AgentStateTracker()
+        tracker.transition(request_id, AgentState.DONE)
+        io_bubbles = tracker.get_io_bubble_count(request_id)
+        if final_res and final_res.metrics:
+            final_res.metrics.io_bubble_count = io_bubbles
+        tracker.remove(request_id)
 
         return response
 

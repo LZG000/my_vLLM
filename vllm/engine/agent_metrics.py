@@ -21,6 +21,7 @@ _queue_seconds = None
 _wait_seconds = None
 _tool_reports = None
 _tool_duplicates = None
+_priority_histogram = None
 
 _seen_lock = threading.Lock()
 _seen = set[str]()
@@ -31,7 +32,7 @@ _MAX_SEEN = 20000
 def _init_metrics() -> None:
     global _initialized
     global _requests, _execution_seconds, _tool_seconds
-    global _queue_seconds, _wait_seconds, _tool_reports, _tool_duplicates
+    global _queue_seconds, _wait_seconds, _tool_reports, _tool_duplicates, _priority_histogram
 
     if _initialized:
         return
@@ -80,6 +81,12 @@ def _init_metrics() -> None:
             "Total duplicate tool_session_id reports per agent_id.",
             labelnames=["agent_id", "model_name"],
         )
+        _priority_histogram = prometheus_client.Histogram(
+            "vllm:agent_priority",
+            "Agent priority distribution of finished requests.",
+            labelnames=["agent_id", "model_name"],
+            buckets=[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+        )
         _initialized = True
         logger.info("Agent metrics initialized.")
 
@@ -95,13 +102,16 @@ def set_model_name(model_name: str) -> None:
         _model_name = model_name
 
 
-def on_request_finished(agent_id: str, execution_seconds: float) -> None:
+def on_request_finished(agent_id: str, execution_seconds: float,
+                          agent_priority: int = 0) -> None:
     _init_metrics()
     labels = _labels(agent_id)
     _requests.labels(**labels).inc(1.0)
     _execution_seconds.labels(**labels).inc(max(0.0, execution_seconds))
-    logger.info("Agent metric update: request_finished agent_id=%s execution_seconds=%.6f",
-                agent_id, max(0.0, execution_seconds))
+    if agent_priority > 0:
+        _priority_histogram.labels(**labels).observe(float(agent_priority))
+    logger.info("Agent metric update: request_finished agent_id=%s execution_seconds=%.6f priority=%d",
+                agent_id, max(0.0, execution_seconds), agent_priority)
 
 
 def on_tool_time_reported(agent_id: str, tool_seconds: float,

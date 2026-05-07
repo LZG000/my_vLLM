@@ -415,6 +415,8 @@ class LLMEngine:
 
         # Phase 3: Engine-layer tool swap state
         self._pending_tool_requests: Dict[str, dict] = {}
+        self._tool_swap_out_blocks: List = []
+        self._tool_swap_in_blocks: List = []
 
     def _initialize_kv_caches(self) -> None:
         """Initialize the KV cache in the worker(s).
@@ -943,6 +945,16 @@ class LLMEngine:
             reconstructed_prompt = original_prompt
 
         # Apply swap boost to priority
+        for sched in self.scheduler:
+            for sg in list(sched.swapped):
+                if sg.request_id == request_id:
+                    try:
+                        sched.swapped.remove(sg)
+                    except ValueError:
+                        pass
+                    sched.abort_seq_group(request_id)
+                    break
+
         boost = get_swap_score_boost(self.scheduler_config)
         boosted_priority = min(100, agent_priority + int(boost))
 
@@ -983,6 +995,7 @@ class LLMEngine:
         now = time.time()
 
         for sched in self.scheduler:
+            to_move = []
             # Snapshot running list since we'll mutate it via abort
             for seq_group in list(sched.running):
                 agent_state = getattr(seq_group, 'agent_state', None)
@@ -1024,16 +1037,33 @@ class LLMEngine:
                 rid = seq_group.request_id
                 self._pending_tool_requests[rid] = saved_state
 
-                # ── Abort via public API ──
-                self.abort_request(rid)
+                # ── KV-Cache swap-out (GPU→CPU) ──
+                if sched.block_manager.can_swap_out(seq_group):
+                    mapping = sched.block_manager.swap_out(seq_group)
+                    self._tool_swap_out_blocks.extend(mapping)
+                    for seq in seq_group.get_seqs():
+                        if seq.status == SequenceStatus.RUNNING:
+                            seq.status = SequenceStatus.SWAPPED
+                else:
+                    self.abort_request(rid)
+                    swapped += 1
+                    continue
                 swapped += 1
+                to_move.append(seq_group)
 
                 logger.info(
-                    "TOOL_ABORT: agent=%s priority=%d request_id=%s "
+                    "TOOL_SWAP_OUT: agent=%s priority=%d request_id=%s "
                     "tool_elapsed=%.2fs remaining=%.2fs threshold=%.2fs",
                     agent_id,
                     getattr(seq_group, 'agent_priority', 0),
                     rid, tool_elapsed, remaining, threshold)
+
+            for sg in to_move:
+                try:
+                    sched.running.remove(sg)
+                except ValueError:
+                    pass
+                sched.swapped.append(sg)
 
         return swapped
 
@@ -1494,6 +1524,13 @@ class LLMEngine:
         # batch has completed.
         if not self._has_remaining_steps(seq_group_metadata_list):
             # Log queue state *before* schedule() drains the waiting queue
+            _hidden_swapped = []
+            if self.scheduler_config.agent_tool_swap_enabled:
+                for sv in self.scheduler:
+                    for sg in list(sv.swapped):
+                        if getattr(sg, 'agent_state', None) == "tool_called":
+                            _hidden_swapped.append((sv, sg))
+                            sv.swapped.remove(sg)
             if self.log_stats:
                 pre_running = sum(len(s.running)
                                   for s in self.scheduler)
@@ -1541,6 +1578,17 @@ class LLMEngine:
             # will cause one virtual engine's microbatch to block the pipeline.
             last_sampled_token_ids = \
                 self._get_last_sampled_token_ids(virtual_engine)
+
+            if self._tool_swap_out_blocks:
+                scheduler_outputs.blocks_to_swap_out.extend(self._tool_swap_out_blocks)
+                self._tool_swap_out_blocks.clear()
+            if self._tool_swap_in_blocks:
+                scheduler_outputs.blocks_to_swap_in.extend(self._tool_swap_in_blocks)
+                self._tool_swap_in_blocks.clear()
+
+            # Restore tool_called seqs hidden from schedule()
+            for sv_, sg_ in _hidden_swapped:
+                sv_.swapped.append(sg_)
 
             execute_model_req = ExecuteModelRequest(
                 seq_group_metadata_list=seq_group_metadata_list,
@@ -1632,7 +1680,7 @@ class LLMEngine:
             logger.debug("Stopping remote worker execution loop.")
             self.model_executor.stop_remote_worker_execution_loop()
 
-        # Phase 3: detect and abort tool_called requests
+        # Phase 3: detect and swap-out tool_called requests (KV Cache preserved)
         self._detect_and_abort_tool_calls()
 
         return ctx.request_outputs

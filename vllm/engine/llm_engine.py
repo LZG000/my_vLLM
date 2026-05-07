@@ -22,6 +22,9 @@ from vllm.config import (DecodingConfig, LoRAConfig, ModelConfig,
 from vllm.core.scheduler import ScheduledSequenceGroup, SchedulerOutputs
 from vllm.engine.arg_utils import EngineArgs
 from vllm.engine.metrics_types import StatLoggerBase, Stats
+from vllm.engine.agent_priority import (compute_agent_priority_score,
+    estimate_tool_remaining, get_swap_threshold, get_swap_score_boost,
+    update_agent_tool_time)
 from vllm.engine.output_processor.interfaces import (
     SequenceGroupOutputProcessor)
 from vllm.engine.output_processor.stop_checker import StopChecker
@@ -410,6 +413,9 @@ class LLMEngine:
 
         self.seq_id_to_seq_group: Dict[str, SequenceGroupBase] = {}
 
+        # Phase 3: Engine-layer tool swap state
+        self._pending_tool_requests: Dict[str, dict] = {}
+
     def _initialize_kv_caches(self) -> None:
         """Initialize the KV cache in the worker(s).
 
@@ -781,6 +787,7 @@ class LLMEngine:
             trace_headers=trace_headers,
             priority=priority,
                 agent_priority=agent_priority,
+                agent_state=agent_state,
         )
 
     def _validate_token_prompt(self, prompt: PromptType,
@@ -903,6 +910,137 @@ class LLMEngine:
         for scheduler in self.scheduler:
             scheduler.abort_seq_group(request_id)
 
+    # ── Phase 3: Engine-layer Tool Swap ──
+
+    def tool_returned(self, request_id: str, tool_result_text: str = "") -> bool:
+        """Re-add a previously swapped-out tool request with tool result.
+
+        Call this when the agent's tool execution completes.
+        The request is re-added as a new request with fresh token state.
+        """
+        if request_id not in self._pending_tool_requests:
+            logger.warning("TOOL_RETURN_UNKNOWN: request_id=%s not in pending",
+                           request_id)
+            return False
+
+        saved = self._pending_tool_requests.pop(request_id)
+        agent_id = saved.get("agent_id", "?")
+        agent_priority = saved.get("agent_priority", 0)
+        original_prompt = saved.get("original_prompt", "")
+        original_params = saved.get("original_params")
+        original_max_tokens = saved.get("original_max_tokens", 256)
+        tool_start_time = saved.get("tool_start_time")
+
+        # Record actual tool duration for EMA
+        if tool_start_time is not None:
+            tool_duration = time.time() - tool_start_time
+            update_agent_tool_time(agent_id, tool_duration)
+
+        # Reconstruct prompt: original prompt + tool result
+        if tool_result_text:
+            reconstructed_prompt = (original_prompt or "") + tool_result_text
+        else:
+            reconstructed_prompt = original_prompt
+
+        # Apply swap boost to priority
+        boost = get_swap_score_boost(self.scheduler_config)
+        boosted_priority = min(100, agent_priority + int(boost))
+
+        # Create new params preserving original settings, with remaining budget
+        new_params = copy.copy(original_params) if original_params else None
+
+        logger.info("TOOL_RETURNED: request_id=%s agent=%s priority=%d->%d msg_len=%d",
+                    request_id, agent_id, agent_priority, boosted_priority,
+                    len(tool_result_text) if tool_result_text else 0)
+
+        self.add_request(
+            request_id=request_id,
+            prompt=reconstructed_prompt,
+            params=new_params,
+            agent_priority=boosted_priority,
+            agent_state="tool_returned",
+        )
+
+        # Tag the newly created seq_group with agent_id
+        for sched in self.scheduler:
+            for sg in list(sched.waiting):
+                if sg.request_id == request_id:
+                    sg.agent_id = agent_id
+                    break
+
+        return True
+
+    def _detect_and_abort_tool_calls(self) -> int:
+        """Scan running seq_groups and abort tool_called requests.
+
+        Called at the end of step() to avoid interfering with scheduler state.
+        Returns number of requests aborted.
+        """
+        if not self.scheduler_config.agent_tool_swap_enabled:
+            return 0
+
+        swapped = 0
+        now = time.time()
+
+        for sched in self.scheduler:
+            # Snapshot running list since we'll mutate it via abort
+            for seq_group in list(sched.running):
+                agent_state = getattr(seq_group, 'agent_state', None)
+                if agent_state != "tool_called":
+                    continue
+
+                # Set tool_start_time on first encounter
+                tool_start = getattr(seq_group, 'tool_start_time', None)
+                if tool_start is None:
+                    seq_group.tool_start_time = now
+                    tool_start = now
+
+                tool_elapsed = now - tool_start
+                agent_id = getattr(seq_group, 'agent_id', '')
+                tool_type = getattr(seq_group, 'tool_type', 'default')
+                estimated = estimate_tool_remaining(agent_id, tool_type)
+                remaining = max(0.0, estimated - tool_elapsed)
+                threshold = get_swap_threshold(
+                    getattr(seq_group, 'agent_priority', 0),
+                    self.scheduler_config)
+
+                if remaining <= threshold:
+                    # Tool finishing soon, keep on GPU
+                    continue
+
+                # ── Save state before abort ──
+                sampling_params = getattr(seq_group, 'sampling_params', None)
+                max_tok = getattr(sampling_params, 'max_tokens', 256) if sampling_params else 256
+
+                saved_state = {
+                    "original_prompt": seq_group.prompt,
+                    "original_params": sampling_params,
+                    "original_max_tokens": max_tok,
+                    "agent_id": agent_id,
+                    "agent_priority": getattr(seq_group, 'agent_priority', 0),
+                    "tool_start_time": tool_start,
+                }
+
+                rid = seq_group.request_id
+                self._pending_tool_requests[rid] = saved_state
+
+                # ── Abort via public API ──
+                self.abort_request(rid)
+                swapped += 1
+
+                logger.info(
+                    "TOOL_ABORT: agent=%s priority=%d request_id=%s "
+                    "tool_elapsed=%.2fs remaining=%.2fs threshold=%.2fs",
+                    agent_id,
+                    getattr(seq_group, 'agent_priority', 0),
+                    rid, tool_elapsed, remaining, threshold)
+
+        return swapped
+
+    def has_pending_tool_requests(self) -> bool:
+        """Check if there are tool requests waiting for tool completion."""
+        return len(self._pending_tool_requests) > 0
+
     def get_model_config(self) -> ModelConfig:
         """Gets the model configuration."""
         return self.model_config
@@ -929,9 +1067,10 @@ class LLMEngine:
                    for scheduler in self.scheduler)
 
     def has_unfinished_requests(self) -> bool:
-        """Returns True if there are unfinished requests."""
-        return any(scheduler.has_unfinished_seqs()
-                   for scheduler in self.scheduler)
+        """Returns True if there are unfinished requests (including pending tools)."""
+        return (any(scheduler.has_unfinished_seqs()
+                    for scheduler in self.scheduler)
+                or self.has_pending_tool_requests())
 
     def has_unfinished_requests_for_virtual_engine(
             self, virtual_engine: int) -> bool:
@@ -1492,6 +1631,9 @@ class LLMEngine:
             # queued control plane messages, such as add/remove lora adapters.
             logger.debug("Stopping remote worker execution loop.")
             self.model_executor.stop_remote_worker_execution_loop()
+
+        # Phase 3: detect and abort tool_called requests
+        self._detect_and_abort_tool_calls()
 
         return ctx.request_outputs
 

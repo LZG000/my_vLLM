@@ -10,6 +10,7 @@ class AgentState(Enum):
     IDLE = "idle"
     RUNNING = "running"
     IO_BLOCKED = "io_blocked"
+    TOOL_CALLED = "tool_called"
     TOOL_RETURNED = "tool_returned"
     DONE = "done"
 

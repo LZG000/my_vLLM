@@ -1499,6 +1499,17 @@ class SchedulerConfig:
     # or "mod.custom_class".
     scheduler_cls: Union[str, Type[object]] = "vllm.core.scheduler.Scheduler"
 
+    # --- Agent Tool Swap (Phase 3, Engine-layer) ---
+    # Enable tool-swap: abort tool_called request and re-add on tool_return
+    agent_tool_swap_enabled: bool = True
+    # Swap thresholds by priority tier (seconds of remaining tool time)
+    agent_tool_swap_threshold_vip: float = 0.5
+    agent_tool_swap_threshold_high: float = 0.5
+    agent_tool_swap_threshold_mid: float = 0.5
+    agent_tool_swap_threshold_bg: float = 0.5
+    # Priority score boost when tool-swapped request returns
+    agent_tool_swap_score_boost: float = 3.0
+
     def compute_hash(self) -> str:
         """
         WARNING: Whenever a new field is added to this config,

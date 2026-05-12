@@ -205,7 +205,7 @@ class MQLLMEngine:
             # ZMQ. Without this, aiohttp's serial send splits bursts
             # into waves, limiting priority sort to each wave.
             if new_arrivals > 0:
-                deadline = time.time() + 0.3
+                deadline = time.time() + 0
                 while time.time() < deadline:
                     if self.input_socket.poll(timeout=10) != 0:
                         self.handle_new_input()
